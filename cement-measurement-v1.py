@@ -3,15 +3,76 @@ import cv2
 import numpy as np
 from datetime import datetime
 from streamlit_drawable_canvas import st_canvas
+import base64
+import io
+from PIL import Image
 
 # Function to calculate Euclidean distance between two points
 def calculate_distance(point1, point2):
     return np.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
 
+# HTML/JavaScript for camera access
+camera_html = """
+<video id="video" width="640" height="480" autoplay></video>
+<canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+<button id="capture" onclick="captureImage()">Capture Image</button>
+<style>
+    #video, #canvas, #capture {
+        display: block;
+        margin: 10px auto;
+    }
+</style>
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const captureButton = document.getElementById('capture');
+    let stream = null;
+
+    // Access camera
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+        .then(function(mediaStream) {
+            stream = mediaStream;
+            video.srcObject = stream;
+        })
+        .catch(function(err) {
+            console.error("Error accessing camera: ", err);
+            document.getElementById('video').style.display = 'none';
+            document.getElementById('capture').style.display = 'none';
+            alert("Could not access camera. Please allow camera access or upload an image.");
+        });
+
+    // Capture image
+    function captureImage() {
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+        
+        // Send image to Streamlit
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'captured_image';
+        input.value = dataUrl;
+        document.body.appendChild(input);
+        
+        // Create and submit form
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '';
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+        
+        // Stop camera stream
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+        }
+    }
+</script>
+"""
+
 # Main Streamlit app
 def main():
-    st.title("Image-Based Measurement Tool")
-    st.write("Upload an image, click two points on the canvas to measure the distance between them.")
+    st.title("Smartphone Camera Measurement Tool")
+    st.write("Use your smartphone camera to capture an image or upload an image, then click two points to measure the distance.")
 
     # Initialize session state
     if 'points' not in st.session_state:
@@ -21,13 +82,32 @@ def main():
     if 'frame' not in st.session_state:
         st.session_state.frame = None
 
-    # Image upload
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
-    if uploaded_file is not None:
-        # Read the uploaded image
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        st.session_state.frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        st.image(st.session_state.frame, channels="BGR", caption="Uploaded Image", use_column_width=True)
+    # Tabs for camera and upload
+    tab1, tab2 = st.tabs(["Capture from Camera", "Upload Image"])
+
+    with tab1:
+        st.write("Click below to access your camera (allow permissions in your browser).")
+        # Render camera HTML
+        st.components.v1.html(camera_html, height=600)
+
+        # Check for captured image
+        if st.experimental_get_query_params().get("captured_image"):
+            data_url = st.experimental_get_query_params()["captured_image"][0]
+            # Decode base64 image
+            img_data = base64.b64decode(data_url.split(',')[1])
+            img = Image.open(io.BytesIO(img_data))
+            st.session_state.frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            st.experimental_set_query_params()  # Clear query params
+
+    with tab2:
+        uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+        if uploaded_file is not None:
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            st.session_state.frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+    # Process image if available
+    if st.session_state.frame is not None:
+        st.image(st.session_state.frame, channels="BGR", caption="Selected Image", use_column_width=True)
 
         # Interactive canvas for point selection
         st.write("Click on the image below to select two points:")
@@ -55,7 +135,7 @@ def main():
             point1, point2 = st.session_state.points
             st.session_state.distance = calculate_distance(point1, point2)
 
-            # Draw points and line on the image
+            # Draw points and line
             frame_copy = st.session_state.frame.copy()
             cv2.circle(frame_copy, point1, 5, (0, 255, 0), -1)
             cv2.circle(frame_copy, point2, 5, (0, 255, 0), -1)
@@ -65,16 +145,14 @@ def main():
                         (mid_point[0], mid_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             st.image(frame_copy, channels="BGR", caption="Measured Image", use_column_width=True)
 
-    # Display distance if calculated
+    # Display and save distance
     if st.session_state.distance is not None:
         st.write(f"Measured Distance: {st.session_state.distance:.2f} pixels")
         if st.button("Save Measurement"):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # Save text file
             text_filename = f"measurement_{timestamp}.txt"
             with open(text_filename, "w") as f:
                 f.write(f"Points: {st.session_state.points}\nDistance: {st.session_state.distance:.2f} pixels")
-            # Save image
             image_filename = f"measurement_{timestamp}.png"
             frame_copy = st.session_state.frame.copy()
             for point in st.session_state.points:
