@@ -1,88 +1,90 @@
 import streamlit as st
 import cv2
 import numpy as np
-import time
-import os
 from datetime import datetime
+from streamlit_drawable_canvas import st_canvas
 
 # Function to calculate Euclidean distance between two points
 def calculate_distance(point1, point2):
     return np.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
 
-# Function to handle mouse clicks for selecting points
-def mouse_callback(event, x, y, flags, param):
-    if event == cv2.EVENT_LBUTTONDOWN:
-        if len(param['points']) < 2:
-            param['points'].append((x, y))
-            if len(param['points']) == 2:
-                param['distance'] = calculate_distance(param['points'][0], param['points'][1])
-
 # Main Streamlit app
 def main():
-    st.title("Camera-Based Measurement Tool")
+    st.title("Image-Based Measurement Tool")
+    st.write("Upload an image, click two points on the canvas to measure the distance between them.")
 
-    # Instructions
-    st.write("Click the button to start the camera. Left-click to select two points. Press 'q' to capture and exit.")
+    # Initialize session state
+    if 'points' not in st.session_state:
+        st.session_state.points = []
+    if 'distance' not in st.session_state:
+        st.session_state.distance = None
+    if 'frame' not in st.session_state:
+        st.session_state.frame = None
 
-    # Button to start the camera
-    if st.button("Open Camera"):
-        # Initialize OpenCV video capture
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            st.error("Error: Could not open camera.")
-            return
+    # Image upload
+    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+    if uploaded_file is not None:
+        # Read the uploaded image
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        st.session_state.frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        st.image(st.session_state.frame, channels="BGR", caption="Uploaded Image", use_column_width=True)
 
-        # Create a window for OpenCV
-        cv2.namedWindow("Camera Feed")
-        
-        # Dictionary to store points and distance
-        data = {'points': [], 'distance': None}
-        cv2.setMouseCallback("Camera Feed", mouse_callback, data)
+        # Interactive canvas for point selection
+        st.write("Click on the image below to select two points:")
+        canvas_result = st_canvas(
+            fill_color="rgba(0, 255, 0, 0.3)",  # Green points
+            stroke_width=3,
+            stroke_color="rgba(0, 255, 0, 1)",
+            background_image=st.session_state.frame,
+            height=st.session_state.frame.shape[0],
+            width=st.session_state.frame.shape[1],
+            drawing_mode="point",
+            key="canvas",
+        )
 
-        # Placeholder for displaying the image in Streamlit
-        image_placeholder = st.empty()
+        # Process canvas points
+        if canvas_result.json_data is not None:
+            points = []
+            for obj in canvas_result.json_data["objects"]:
+                if obj["type"] == "circle":
+                    points.append((int(obj["left"]), int(obj["top"])))
+            st.session_state.points = points[:2]  # Limit to 2 points
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Error: Could not read frame.")
-                break
+        # Calculate distance if 2 points are selected
+        if len(st.session_state.points) == 2 and st.button("Calculate Distance"):
+            point1, point2 = st.session_state.points
+            st.session_state.distance = calculate_distance(point1, point2)
 
-            # Draw selected points and line
-            for point in data['points']:
-                cv2.circle(frame, point, 5, (0, 255, 0), -1)
-            if len(data['points']) == 2:
-                cv2.line(frame, data['points'][0], data['points'][1], (0, 0, 255), 2)
-                # Display distance on the frame
-                mid_point = ((data['points'][0][0] + data['points'][1][0]) // 2,
-                             (data['points'][0][1] + data['points'][1][1]) // 2)
-                cv2.putText(frame, f"Distance: {data['distance']:.2f} pixels",
-                           (mid_point[0], mid_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # Draw points and line on the image
+            frame_copy = st.session_state.frame.copy()
+            cv2.circle(frame_copy, point1, 5, (0, 255, 0), -1)
+            cv2.circle(frame_copy, point2, 5, (0, 255, 0), -1)
+            cv2.line(frame_copy, point1, point2, (0, 0, 255), 2)
+            mid_point = ((point1[0] + point2[0]) // 2, (point1[1] + point2[1]) // 2)
+            cv2.putText(frame_copy, f"{st.session_state.distance:.2f} pixels",
+                        (mid_point[0], mid_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            st.image(frame_copy, channels="BGR", caption="Measured Image", use_column_width=True)
 
-            # Convert frame to RGB for Streamlit display
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image_placeholder.image(frame_rgb, caption="Camera Feed", use_column_width=True)
-
-            # Display distance in Streamlit if calculated
-            if data['distance'] is not None:
-                st.write(f"Measured Distance: {data['distance']:.2f} pixels")
-
-            # Show frame in OpenCV window
-            cv2.imshow("Camera Feed", frame)
-
-            # Check for 'q' key to exit
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                if data['distance'] is not None:
-                    # Save the final frame with measurements
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"measurement_{timestamp}.png"
-                    cv2.imwrite(filename, frame)
-                    st.success(f"Measurement captured and saved as {filename}")
-                break
-
-        # Release resources
-        cap.release()
-        cv2.destroyAllWindows()
+    # Display distance if calculated
+    if st.session_state.distance is not None:
+        st.write(f"Measured Distance: {st.session_state.distance:.2f} pixels")
+        if st.button("Save Measurement"):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Save text file
+            text_filename = f"measurement_{timestamp}.txt"
+            with open(text_filename, "w") as f:
+                f.write(f"Points: {st.session_state.points}\nDistance: {st.session_state.distance:.2f} pixels")
+            # Save image
+            image_filename = f"measurement_{timestamp}.png"
+            frame_copy = st.session_state.frame.copy()
+            for point in st.session_state.points:
+                cv2.circle(frame_copy, point, 5, (0, 255, 0), -1)
+            if len(st.session_state.points) == 2:
+                cv2.line(frame_copy, st.session_state.points[0], st.session_state.points[1], (0, 0, 255), 2)
+                cv2.putText(frame_copy, f"{st.session_state.distance:.2f} pixels",
+                            (mid_point[0], mid_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.imwrite(image_filename, frame_copy)
+            st.success(f"Measurement saved as {text_filename} and {image_filename}")
 
 if __name__ == "__main__":
     main()
